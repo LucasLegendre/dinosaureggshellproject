@@ -1154,12 +1154,6 @@ rateMap<-contMap(ratesDcop$tree, rateplot, method="user", anc.states=rateanc, pl
 plot(setMap(rateMap,colors=rev(brewer.pal(10, "Spectral"))), fsize=0.4,lwd=4,cex=c(0.5,0.3))
 ```
 
-- Difference between the two equations (Hoyt, 1979; Packard and DeMarco, 1991) for egg mass estimation
-```{r}
-equatable<-read.table("Test_equation.txt", header=T)
-t.test(equatable$A,equatable$B)
-```
-
 ### Define taxonomic groups (non-paravian maniraptorans, non-avialan paravians, non-avian avialans) to compile regressions for each of them
 
 - Define the new groups
