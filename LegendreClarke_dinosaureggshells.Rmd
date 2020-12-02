@@ -1,0 +1,1325 @@
+---
+title: "Dinosaur eggshell evolution project"
+author: "Lucas Legendre"
+date: "12/02/2020"
+output:
+  html_document:
+     toc: true
+     toc_float:
+      collapsed: false
+      smooth_scroll: false
+     df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+```
+
+Compiled under R version 4.0.3 (2020-10-10)
+
+<b>WARNING</b>: edit the working directory to your preferred folder.
+
+This document details all analyses performed in R for the study:  
+Legendre, L. J., and J. A. Clarke. 2020. Shifts in eggshell thickness are related to changes in locomotor ecology and body size in dinosaurs.
+
+For more information regarding the study, datasets, and analyses, please refer to the Main Text and Supplementary Information of this paper. If you have any additional questions, feel free to email me at <lucasjlegendre@gmail.com>.
+
+### Loading packages
+```{r, warning = F}
+library(nlme)
+library(ape)
+library(ggplot2)
+library(phytools)
+library(RColorBrewer)
+library(plyr)
+library(dplyr)
+library(evobiR)
+library(AICcmodavg)
+library(RRphylo)
+library(car)
+library(hrbrthemes)
+library(phylopath)
+library(ggtree)
+library(caper)
+library(emmeans)
+```
+
+## Data and tree
+
+- Tree
+```{r}
+tree<-read.nexus("treewholenew.trees.nex")
+```
+
+- Data
+```{r}
+data<-read.table("Datawhole.txt", header=T, stringsAsFactors=T)
+treeN<-drop.tip(tree, setdiff(tree$tip.label, data$Taxon))
+plotTree(treeN)
+```
+
+### Subsetting the dinosaurs (including birds)
+```{r}
+dataD<-data %>% filter(Clade=="Non-avian_dinosaurs"|Clade=="Paleognaths"|Clade=="Neognaths"|Clade=="Enantiornithes"|Clade=="Ornithuromorphs")
+dataD<-subset(dataD, !is.na(Egg_mass))
+rownames(dataD)<-dataD$Taxon
+treeD<-drop.tip(treeN,setdiff(treeN$tip.label, dataD$Taxon))
+dataD<-ReorderData(treeD, dataD, taxa.names="row names")
+```
+
+## Effect of egg mass and body mass on eggshell thickness
+
+Since body mass is not available for fossil eggs, we need to test if egg mass can be considered a viable proxy for it, using phylogenetic generalized least squares (PGLS) regressions.
+
+Removing missing data for body mass
+```{r}
+datamass<-subset(dataD, !is.na(dataD$Body_mass))
+treemass<-drop.tip(tree, setdiff(tree$tip.label, datamass$Taxon))
+
+# Correcting the variance-covariance matrix for the non-ultrametric tree
+Wm<-diag(vcv.phylo(treemass))
+```
+
+### Egg mass ~ body mass
+
+- Parameters
+```{r}
+# Best fit for the alpha parameter in the Ornstein-Uhlenbeck (OU) model
+alpha <- seq(0, 1, 0.1)
+fit <- list()
+form <- log(Egg_mass)~log(Body_mass)
+for (i in seq_along(alpha)) {
+  cor <- corMartins(alpha[i], phy = treemass, fixed = T)
+  fit[[i]] <- gls(form, correlation = cor, data = datamass, weights=varFixed(~Wm), na.action=na.exclude, method = "ML")
+}
+plot(sapply(fit, logLik)) # best fit: 0.1
+
+# Best fit for the alpha parameter in the Early Burst (EB) model
+g <- seq(0.1, 1, 0.1)
+fit <- list()
+form <- log(Egg_mass)~log(Body_mass)
+for (i in seq_along(g)) {
+  cor <- corBlomberg(g[i], phy = treemass, fixed = T)
+  fit[[i]] <- gls(form, correlation = cor, data = datamass, weights=varFixed(~Wm), na.action=na.exclude, method = "ML")
+}
+plot(sapply(fit, logLik)) # best fit: 0.1
+```
+
+- PGLS models
+```{r}
+BM<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBrownian(phy=treemass), weights=varFixed(~Wm), method="ML")
+OU<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corMartins(0.1, phy=treemass, fixed=T), weights=varFixed(~Wm), method="ML")
+Lambda<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corPagel(0.1, phy=treemass), weights=varFixed(~Wm), method="ML")
+EB<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBlomberg(0.1, phy=treemass), weights=varFixed(~Wm), method="ML")
+OLS<-gls(log(Egg_mass)~log(Body_mass), data=datamass, method="ML")
+
+Cand.models = list()
+Cand.models[[1]] = BM
+Cand.models[[2]] = OU
+Cand.models[[3]] = Lambda
+Cand.models[[4]] = EB
+Cand.models[[5]] = OLS
+
+Modnames = paste(c("BM", "OU", "Lambda", "EB", "OLS"), sep = " ")
+aictab(cand.set = Cand.models, modnames = Modnames, sort = T)
+summary(BM)
+```
+
+- Estimating the pseudo R^{2} and p-value
+```{r}
+# Pseudo R2
+BM2<-gls(log(Egg_mass)~1, data=datamass, correlation=corBrownian(0.1, phy=treemass), method="ML")
+1 - (BM$sigma/BM2$sigma)^2
+
+# p-value
+anova(BM2, BM)
+```
+
+Here, a simple Brownian Motion model fits the data best.
+The model is highly significant (R^{2} = 0.999, p < 0.0001), so egg mass is a good proxy for body mass.
+
+## Testing the effect of allometric exponent on egg mass estimates
+
+Two different allometric equations have been used to estimate egg mass from egg length and width – one for birds, and one for non-avian reptiles (see Main Text). The only difference between them is their allometric exponent - 5.48 for birds, and 5.6 for non-avian reptiles. In this section, we test for a significant difference between estimates produced by the two equations for several species in our sample (n = 63).
+
+- Data
+```{r}
+DataEggMass<-read.table("Data_Eggmass_equations.txt", header=T)
+```
+
+- Test for a difference between the two estimates (paired samples)
+```{r}
+# Test for normality of differences
+differ<-log(DataEggMass$Mreptile) - log(DataEggMass$Mbird)
+shapiro.test(differ) # not normally distributed: we cannot use a paired t-test
+
+# Let us use the non-parametric equivalent – Wilcoxon signed-rank test
+wilcox.test(log(DataEggMass$Mreptile), log(DataEggMass$Mbird), paired=T)
+```
+
+Here, p = 1.442e-12; the difference between estimates provided by the two equations is *significant*.
+Using two different equations to estimate egg mass is thus appropriate.
+
+Plot of Eggshell thickness ~ Egg mass for each estimate
+```{r}
+# Using non-avian reptile equation
+ggplot(DataEggMass, aes(log(Mreptile), log(Eggshell_thickness), color=Group)) +
+  geom_point(size=5) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_colour_brewer("Group", palette="Set1")
+
+# Using bird equation
+ggplot(DataEggMass, aes(log(Mbird), log(Eggshell_thickness), color=Group)) +
+  geom_point(size=5) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_colour_brewer("Group", palette="Set1")
+```
+
+The two plots are virtually identical.
+
+- Violin plot for both estimates
+```{r}
+equa<-c(rep("bird", 63), rep("reptile", 63))
+dataviolin<-data.frame(c(DataEggMass$Mbird,
+                                  DataEggMass$Mreptile), equa)
+names(dataviolin)<-c("Egg_mass","Equation")
+
+dataviolin %>%
+  ggplot(aes(x=Equation, y=log(Egg_mass), fill=Equation)) +
+    geom_violin() +
+    theme_ipsum() +
+    theme(legend.position="none", plot.title = element_text(size=11)) +
+    ggtitle("Violin chart") +
+    xlab("") +
+  scale_fill_brewer(palette="Dark2")
+```
+
+- Boxplot with data points for both estimates
+```{r}
+dataviolin %>%
+  ggplot(aes(x=Equation, y=log(Egg_mass), fill=Equation)) +
+    geom_boxplot() +
+    geom_point(color="black", size=0.4, alpha=0.9) +
+    theme_ipsum() +
+    theme(legend.position="none", plot.title = element_text(size=11)) +
+    ggtitle("Boxplot with points") +
+    xlab("") +
+  scale_fill_brewer(palette="Dark2")
+```
+
+Distributions are identical.
+
+- Regressions to test for a difference in slope
+```{r}
+# Prune tree
+treeregmass<-drop.tip(treeD, setdiff(treeD$tip.label, DataEggMass$Taxon))
+Wmass<-diag(vcv.phylo(treeregmass))
+
+# Regressions
+regmassbird<-gls(log(Eggshell_thickness)~log(Mbird), DataEggMass, correlation=corPagel(1, phy=treeregmass), weights=varFixed(~Wmass), method="ML")
+regmassrep<-gls(log(Eggshell_thickness)~log(Mreptile), DataEggMass, correlation=corPagel(1, phy=treeregmass), weights=varFixed(~Wmass), method="ML")
+
+# Slopes
+intervals(regmassbird); intervals(regmassrep)
+```
+
+Slopes and their confidence intervals are identical.
+
+## Phylogenetic path analysis (using `phylopath`)
+
+Because of the high number of predictive variables (6), we did two separate path analyses. Both include flight and egg mass as independent variables (see Main Text); one also includes nesting type and size (NT and NS), while the other includes clutch size and precociality (CS and P).
+
+### With nesting parameters (nesting size and nest type)
+```{r, warning=F}
+ppadata<-dataD
+ppadata[,c(3:5,10)]<-log(ppadata[,c(3:5,10)])
+colnames(ppadata)[3:10]<-c("ET","EM","BM","Flight","NS","NT","P","CS")
+ppadata$NT<-as.numeric(ppadata$NT)
+
+M<-define_model_set(null=c(),
+                    one=c(EM~Flight),
+                    two=c(ET~Flight),
+                    three=c(EM~Flight, ET~Flight),
+                    four=c(EM~NS),
+                    five=c(EM~NS+Flight),
+                    six=c(EM~NS, ET~Flight),
+                    seven=c(EM~NS+Flight, ET~Flight),
+                    eight=c(EM~NT),
+                    nine=c(ET~NT),
+                    ten=c(EM~Flight+NT),
+                    eleven=c(ET~Flight+NT),
+                    twelve=c(EM~Flight+NT, ET~Flight),
+                    thirteen=c(EM~Flight, ET~Flight+NT),
+                    fourteen=c(EM~Flight+NT, ET~Flight+NT),
+                    fifteen=c(EM~NT+NS),
+                    sixteen=c(ET~NT+NS),
+                    seventeen=c(EM~Flight+NT+NS),
+                    eighteen=c(EM~Flight+NT+NS, ET~Flight),
+                    nineteen=c(EM~Flight+NT, ET~Flight+NS),
+                    twenty=c(EM~Flight+NT+NS, ET~Flight+NS),
+                    twentyone=c(EM~Flight+NS, ET~Flight+NT),
+                    twentytwo=c(EM~Flight, ET~Flight+NT+NS),
+                    twentythree=c(EM~Flight+NS, ET~Flight+NT+NS),
+                    twentyfour=c(EM~Flight+NT+NS, ET~Flight+NT),
+                    twentyfive=c(EM~Flight+NT, ET~Flight+NT+NS),
+                    twentysix=c(EM~Flight+NT+NS, ET~Flight+NT+NS),
+                    .common=c(ET~EM,NS~Flight, NT~NS))
+
+plot_model_set(M)
+result<-phylo_path(M, data=ppadata, tree=treemass, model='lambda', "logistic_IG10"); result
+s<-summary(result); s
+plot(s)
+averagemodel<-average(result, avg_method="full")
+plot(averagemodel)
+
+# coefficients of best model
+coef_plot(averagemodel, reverse_order = TRUE) + 
+   ggplot2::coord_flip() + 
+   ggplot2::theme_bw()
+
+# Coefficient tables to check the confidence intervals
+averagemodel$coef; averagemodel$lower; averagemodel$upper
+
+# individual results of model ten
+result$d_sep$ten
+```
+
+Flight is the main driver of variation in egg mass, which in turn affects eggshell thickness; the effect of nest type and site are negligible.
+
+### With precociality and clutch size
+```{r}
+M2<-define_model_set(null=c(),
+                    one=c(EM~Flight),
+                    two=c(ET~Flight),
+                    three=c(EM~Flight, ET~Flight),
+                    four=c(EM~P),
+                    five=c(EM~P+Flight),
+                    six=c(EM~P, ET~Flight),
+                    seven=c(EM~P+Flight, ET~Flight),
+                    eight=c(EM~CS),
+                    nine=c(ET~CS),
+                    ten=c(EM~Flight+CS),
+                    eleven=c(ET~Flight+CS),
+                    twelve=c(EM~Flight+CS, ET~Flight),
+                    thirteen=c(EM~Flight, ET~Flight+CS),
+                    fourteen=c(EM~Flight+CS, ET~Flight+CS),
+                    fifteen=c(EM~P+CS),
+                    sixteen=c(ET~P+CS),
+                    seventeen=c(EM~Flight+P+CS),
+                    eighteen=c(EM~Flight+P+CS, ET~Flight),
+                    nineteen=c(EM~Flight+CS, ET~Flight+P),
+                    twenty=c(EM~Flight+P+CS, ET~Flight+P),
+                    twentyone=c(EM~Flight+P, ET~Flight+CS),
+                    twentytwo=c(EM~Flight, ET~Flight+P+CS),
+                    twentythree=c(EM~Flight+P, ET~Flight+P+CS),
+                    twentyfour=c(EM~Flight+P+CS, ET~Flight+CS),
+                    twentyfive=c(EM~Flight+CS, ET~Flight+P+CS),
+                    twentysix=c(EM~Flight+P+CS, ET~Flight+P+CS),
+                    .common=c(ET~EM, CS~P))
+
+plot_model_set(M2)
+result2<-phylo_path(M2, data=ppadata, tree=treemass, model='lambda', "logistic_IG10"); result
+s2<-summary(result2); s2
+plot(s2)
+averagemodel2<-average(result2, avg_method="full")
+plot(averagemodel2)
+
+# coefficients of best model
+coef_plot(averagemodel2, reverse_order = TRUE) + 
+   ggplot2::coord_flip() + 
+   ggplot2::theme_bw()
+
+# Coefficient tables to check the confidence intervals
+averagemodel2$coef; averagemodel2$lower; averagemodel2$upper
+
+# individual results of model thirteen
+result2$d_sep$ten
+```
+
+Result is similar to the previous model: flight and egg mass are the main drivers of variation in eggshell thickness for birds. The 95% confidence interval for the ET~CS regression coefficient appears to be different from zero, but its lower limit is 0.049,; which is much lower than .
+
+*We will thus focus on these two variables to describe the variation of eggshell thickness in dinosaurs, and use them as auxiliary variables to compile evolutionary rates for eggshell thickness*.
+
+## Influence of egg mass and flight on eggshell thickness
+
+The effect of our predictive variables on eggshell thickness is investigated using phylogenetic regressions (PGLS).
+
+Removing the missing data for flight
+```{r}
+dataflight<-subset(dataD, !is.na(dataD$Flight))
+treeflight<-drop.tip(tree, setdiff(tree$tip.label, dataflight$Taxon))
+
+# Correcting the variance-covariance matrix for the non-ultrametric tree
+Wf<-diag(vcv.phylo(treeflight)) # without missing data for flight
+Wd<-diag(vcv.phylo(treeD)) # with all data
+```
+
+### PGLS for models with and without flight as a co-predictor
+
+Because a model with two co-predictors might show an overfit, we need to compare its goodness of fit with a simpler model (only one predictor). Here, we compare the goodness of fit of models with either two co-predictors (egg mass and flight) or one predictor (egg mass), using AICc.
+
+- Parameters
+```{r}
+# Best fit for the alpha parameter in the OU model – with flight as a co-predictor
+alpha <- seq(0, 1, 0.1)
+fit <- list()
+form <- log(Eggshell_thickness)~log(Egg_mass)*Flight
+for (i in seq_along(alpha)) {
+  cor <- corMartins(alpha[i], phy = treeflight, fixed = T)
+  fit[[i]] <- gls(form, correlation = cor, data = dataflight, weights=varFixed(~Wf), na.action=na.exclude, method = "ML")
+}
+plot(sapply(fit, logLik)) # best fit: 0.1
+
+# Best fit for the alpha parameter in the OU model – with egg mass as only predictor
+alpha <- seq(0, 1, 0.1)
+fit <- list()
+form <- log(Eggshell_thickness)~log(Egg_mass)
+for (i in seq_along(alpha)) {
+  cor <- corMartins(alpha[i], phy = treeD, fixed = T)
+  fit[[i]] <- gls(form, correlation = cor, data = dataD, weights=varFixed(~Wd), na.action=na.exclude, method = "ML")
+}
+plot(sapply(fit, logLik)) # best fit: 0.1
+```
+
+- PGLS models
+```{r}
+## With flight as co-predictor
+BM<-gls(log(Eggshell_thickness)~log(Egg_mass)*Flight, data=dataflight, correlation=corBrownian(phy=treeflight), weights=varFixed(~Wf), method="ML")
+OU<-gls(log(Eggshell_thickness)~log(Egg_mass)*Flight, data=dataflight, correlation=corMartins(0.1, treeflight, fixed=T), weights=varFixed(~Wf), method="ML")
+Lambda<-gls(log(Eggshell_thickness)~log(Egg_mass)*Flight, data=dataflight, correlation=corPagel(0.9, phy=treeflight), weights=varFixed(~Wf), method="ML")
+EB<-gls(log(Eggshell_thickness)~log(Egg_mass)*Flight, data=dataflight, correlation=corBlomberg(0.1, phy=treeflight, fixed = T), weights=varFixed(~Wf), method="ML")
+OLS<-gls(log(Eggshell_thickness)~log(Egg_mass)*Flight, data=dataflight, method="ML")
+
+## With egg mass as only predictor
+BM2<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataD, correlation=corBrownian(phy=treeD), weights=varFixed(~Wd), method="ML")
+OU2<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataD, correlation=corMartins(0.1, treeD, fixed=T), weights=varFixed(~Wd), method="ML")
+Lambda2<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataD, correlation=corPagel(0.9, phy=treeD), weights=varFixed(~Wd), method="ML")
+EB2<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataD, correlation=corBlomberg(0.1, phy=treeD), weights=varFixed(~Wd), method="ML")
+OLS2<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataD, method="ML")
+
+Cand.models = list()
+Cand.models[[1]] = BM
+Cand.models[[2]] = OU
+Cand.models[[3]] = Lambda
+Cand.models[[4]] = EB
+Cand.models[[5]] = OLS
+Cand.models[[6]] = BM2
+Cand.models[[7]] = OU2
+Cand.models[[8]] = Lambda2
+Cand.models[[9]] = EB2
+Cand.models[[10]] = OLS2
+
+Modnames = paste(c("BM", "OU", "Lambda", "EB", "OLS", "BM2", "OU2", "Lambda2", "EB2", "OLS2"), sep = " ")
+aictab(cand.set = Cand.models, modnames = Modnames, sort = T)
+
+summary(Lambda)
+```
+
+- Estimating the pseudo R^{2} and the p-value
+```{r}
+# Pseudo R2
+Lambdanull<-gls(log(Eggshell_thickness)~1, data=dataflight, correlation=corPagel(0.1, phy=treeflight), method="ML")
+1 - (Lambda$sigma/Lambdanull$sigma)^2
+
+# p-value
+anova(Lambdanull, Lambda)
+```
+
+A lambda model with both flight and egg mass shows the best fit for eggshell thickness for dinosaurs. The model is highly significant (R^{2} = 0.998; p < 0.0001).
+
+Parametric assumptions – checking for outliers
+```{r}
+# Normality test
+shapiro.test(chol(solve(vcv(treeflight)))%*%residuals(Lambda)) # non normal
+
+# Checking the residuals
+res<-resid(Lambda, type="n")
+plot(Lambda, resid(., type="n")~fitted(.), main="Normalized Residuals v Fitted Values",abline=c(0,0))
+qqnorm(res); qqline(res)
+
+# Removing the outliers
+remove<-names(res)[which(res<(-2.2))]
+dataflightnew<-dataflight[!rownames(dataflight)%in%remove,]
+treeflightnew<-drop.tip(treeflight, setdiff(treeflight$tip.label, row.names(dataflightnew)))
+Wfnew<-diag(vcv.phylo(treeflightnew))
+
+# New PGLS
+Lambdanew<-gls(log(Eggshell_thickness)~log(Egg_mass)*Flight, data=dataflightnew, correlation=corPagel(0.1, phy=treeflightnew), weights=varFixed(~Wfnew), method="ML")
+summary(Lambdanew)
+
+shapiro.test(chol(solve(vcv(treeflightnew)))%*%residuals(Lambdanew))
+resnew<-resid(Lambda, type="n")
+plot(Lambdanew, resid(., type="n")~fitted(.), main="Normalized Residuals v Fitted Values",abline=c(0,0))
+qqnorm(resnew); qqline(resnew)
+```
+
+Even when removing the most conspicuous outliers, the residuals are not normally distributed, and their distribution is quite heteregeneous. This is likely due to the important difference in distribution between flying and non-flying taxa (see below).
+
+### Distribution of the data: what is the impact of flight on the evolution of egg mass and eggshell thickness?
+
+#### 1) PGLS for Eggshell thickness ~ Egg mass, showing differences between flyers and non-flyers
+
+- Subsetting the data and tree
+```{r}
+dataDfly<-subset(dataD, dataD$Flight=="Y")
+dataDnofly<-subset(dataD, dataD$Flight=="N")
+treeDfly<-drop.tip(treeD, setdiff(treeD$tip.label, dataDfly$Taxon))
+treeDnofly<-drop.tip(treeD, setdiff(treeD$tip.label, dataDnofly$Taxon))
+Wfly<-diag(vcv.phylo(treeDfly))
+Wnofly<-diag(vcv.phylo(treeDnofly))
+
+# without outliers
+dataDnoflyclean<-subset(dataD, dataD$Flight=="N")
+dataDnoflyclean<-dataDnoflyclean[-c(25:27),]
+treeDnoflyclean<-drop.tip(treeD, setdiff(treeD$tip.label, dataDnoflyclean$Taxon))
+Wnoflyclean<-diag(vcv.phylo(treeDnoflyclean))
+```
+
+- PGLS for flyers and non-flyers
+```{r}
+glsfly<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataDfly,  correlation=corPagel(0.1, phy=treeDfly), weights=varFixed(~Wfly), method='ML')
+glsnofly<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataDnofly, correlation=corBrownian(0.1, phy=treeDnofly), weights=varFixed(~Wnofly), method='ML')
+summary(glsfly); summary(glsnofly)
+
+glsnoflyclean<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataDnoflyclean, correlation=corBrownian(1, phy=treeDnoflyclean), weights=varFixed(~Wnoflyclean), method='ML')
+summary(glsnoflyclean)
+```
+
+- Quick estimation of pseudo R^{2} and p-value using `caper`
+```{r}
+datacompfly<-comparative.data(treeDfly, dataDfly, names.col="Taxon")
+datacompnofly<-comparative.data(treeDnofly, dataDnofly, names.col="Taxon")
+pglsfly<-pgls(log(Eggshell_thickness)~log(Egg_mass), datacompfly, lambda='ML')
+pglsnofly<-pgls(log(Eggshell_thickness)~log(Egg_mass), datacompnofly, lambda='ML')
+summary(pglsfly); summary(pglsnofly)
+
+datacompnoflyclean<-comparative.data(treeDnoflyclean, dataDnoflyclean, names.col="Taxon")
+pglsnoflyclean<-pgls(log(Eggshell_thickness)~log(Egg_mass), datacompnoflyclean, lambda='ML')
+summary(pglsnoflyclean)
+```
+
+Both models are highly significant.
+
+- ANOVA of the two models to test for a difference in slope between flyers and non-flyers
+```{r}
+summary(Lambda)
+Lambdanoint<-gls(log(Eggshell_thickness)~log(Egg_mass)+Flight, data=dataflight, correlation=corPagel(0.1, phy=treeflight), weights=varFixed(~Wf), method="ML")
+anova(Lambda, Lambdanoint)
+```
+
+
+##### Plot of both regressions
+
+- Colored by group
+```{r}
+ggplot(dataD, aes(log(Egg_mass), log(Eggshell_thickness), color=Clade)) +
+  geom_point(size=5) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glsfly$coefficients[1], slope=glsfly$coefficients[2],
+              colour="skyblue2", size=1.3) +
+  geom_abline(intercept=glsnofly$coefficients[1], slope=glsnofly$coefficients[2],
+              colour="indianred2", size=1.3) +
+  theme(panel.background = element_rect(fill="black")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_colour_brewer("Group", palette="Set1")
+```
+
+
+- Colored by flying vs non-flying taxa
+```{r}
+hull <- na.omit(dataD[,c(1:4,6)]) %>% group_by(Flight) %>% slice(chull(log(Egg_mass), log(Eggshell_thickness)))
+
+ggplot(dataD, aes(log(Egg_mass), log(Eggshell_thickness), color=Flight, fill=Flight)) +
+  geom_point(size=5) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glsfly$coefficients[1], slope=glsfly$coefficients[2],
+              colour="skyblue2", size=1.3) +
+  geom_abline(intercept=glsnofly$coefficients[1], slope=glsnofly$coefficients[2],
+              colour="indianred2", size=1.3) +
+  #theme(panel.background = element_rect(fill="white")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  aes(fill=Flight) +
+  geom_polygon(data=hull, alpha=0.5) +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
+```
+
+- Same with no outliers in non-avian dinosaurs
+```{r}
+hullclean <- na.omit(dataDclean[,c(1:4,6)]) %>% group_by(Flight) %>% slice(chull(log(Egg_mass), log(Eggshell_thickness)))
+
+ggplot(dataDclean, aes(log(Egg_mass), log(Eggshell_thickness), color=Flight, fill=Flight)) +
+  geom_point(size=5) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glsfly$coefficients[1], slope=glsfly$coefficients[2],
+              colour="skyblue2", size=1.3) +
+  geom_abline(intercept=glsnoflyclean$coefficients[1], slope=glsnoflyclean$coefficients[2],
+              colour="indianred2", size=1.3) +
+  #theme(panel.background = element_rect(fill="white")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  aes(fill=Flight) +
+  geom_polygon(data=hullclean, alpha=0.5) +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
+```
+
+- For nesting site
+```{r}
+hullclean <- na.omit(dataDclean[,c(1:4,7)]) %>% group_by(Nesting_site) %>% slice(chull(log(Egg_mass), log(Eggshell_thickness)))
+
+ggplot(dataDclean, aes(log(Egg_mass), log(Eggshell_thickness), color=Nesting_site, fill=Nesting_site)) +
+  geom_point(size=5) +
+  #geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glsfly$coefficients[1], slope=glsfly$coefficients[2],
+              colour="skyblue2", size=1.3) +
+  geom_abline(intercept=glsnoflyclean$coefficients[1], slope=glsnoflyclean$coefficients[2],
+              colour="indianred2", size=1.3) +
+  #theme(panel.background = element_rect(fill="white")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  aes(fill=Nesting_site) +
+  geom_polygon(data=hullclean, alpha=0.5) +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
+```
+
+- For nest type
+```{r}
+hullclean <- na.omit(dataDclean[,c(1:4,8)]) %>% group_by(Nest_type) %>% slice(chull(log(Egg_mass), log(Eggshell_thickness)))
+
+ggplot(dataDclean, aes(log(Egg_mass), log(Eggshell_thickness), color=Nest_type, fill=Nest_type)) +
+  geom_point(size=5) +
+  #geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glsfly$coefficients[1], slope=glsfly$coefficients[2],
+              colour="skyblue2", size=1.3) +
+  geom_abline(intercept=glsnoflyclean$coefficients[1], slope=glsnoflyclean$coefficients[2],
+              colour="indianred2", size=1.3) +
+  #theme(panel.background = element_rect(fill="white")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  aes(fill=Nest_type) +
+  geom_polygon(data=hullclean, alpha=0.5) +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
+```
+
+- For precociality
+```{r}
+hullclean <- na.omit(dataDclean[,c(1:4,9)]) %>% group_by(Precociality) %>% slice(chull(log(Egg_mass), log(Eggshell_thickness)))
+
+ggplot(dataDclean, aes(log(Egg_mass), log(Eggshell_thickness), color=Precociality, fill=Precociality)) +
+  geom_point(size=5) +
+  #geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glsfly$coefficients[1], slope=glsfly$coefficients[2],
+              colour="skyblue2", size=1.3) +
+  geom_abline(intercept=glsnoflyclean$coefficients[1], slope=glsnoflyclean$coefficients[2],
+              colour="indianred2", size=1.3) +
+  #theme(panel.background = element_rect(fill="white")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  aes(fill=Precociality) +
+  geom_polygon(data=hullclean, alpha=0.5) +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
+```
+
+- Boxplots for each of those on relative eggshell thickness – i.e. ratio (eggshell thickness/egg mass)
+```{r}
+ggplot(subset(dataD, !is.na(Flight)), aes(x=Flight, y=log(Eggshell_thickness/Egg_mass), fill=Flight)) + 
+  geom_boxplot() +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_fill_brewer(palette="Set1")
+
+ggplot(subset(dataD, !is.na(Nesting_site)), aes(x=Nesting_site, y=log(Eggshell_thickness/Egg_mass), fill=Nesting_site)) + 
+  geom_boxplot() +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_fill_brewer(palette="Set1")
+
+ggplot(subset(dataD, !is.na(Nest_type)), aes(x=Nest_type, y=log(Eggshell_thickness/Egg_mass), fill=Nest_type)) + 
+  geom_boxplot() +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_fill_brewer(palette="Set1")
+
+ggplot(subset(dataD, !is.na(Precociality)), aes(x=Precociality, y=log(Eggshell_thickness/Egg_mass), fill=Precociality)) + 
+  geom_boxplot() +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_fill_brewer(palette="Set1")
+```
+
+
+We can observe:
+- A clear difference between models for slope and intercept
+- A higher variance in non-flyers than in flyers
+- A higher egg mass and eggshell thickness for non flyers, most likely linked with a decrease in body mass in flying birds
+- Fossil eggs with no data on the flying abilities of their bearers are clearly aligned with one or the other regression line, suggesting egg features might have a good predictive power for flying abilities in dinosaurs
+- A much less pronounced difference in relative eggshell thickness between nest types, nesting sites, and precociality/altriciality than that seen between flyers and non-flyers
+
+#### 2) Effect of flight on the distribution of the residuals of Eggshell thickness ~ Egg mass
+
+- Let us go back to the original Lambda model for Eggshell thickness ~ Egg mass (selected as having the best fit among ET~EM models using AICc)
+```{r}
+summary(Lambda2)
+
+# Coefficients
+Lambda2null<-gls(log(Eggshell_thickness)~1, data=dataD, correlation=corPagel(0.1, phy=treeD), weights=varFixed(~Wd), method="ML")
+1 - (Lambda2$sigma/Lambda2null$sigma)^2
+anova(Lambda2null, Lambda2)
+```
+
+- Checking the residuals
+```{r}
+resL2<-resid(Lambda2, type="n")
+plot(Lambda2, resid(., type="n")~fitted(.), main="Normalized Residuals v Fitted Values",abline=c(0,0))
+qqnorm(resL2); qqline(resL2)
+shapiro.test(chol(solve(vcv(treeD)))%*%residuals(Lambda2))
+
+# Removing the outliers
+remove<-names(resL2)[which(resL2<(-1.8))]
+dataDnew<-dataD[!rownames(dataD)%in%remove,]
+treeDnew<-drop.tip(treeD, setdiff(treeD$tip.label, dataDnew$Taxon))
+Wdnew<-diag(vcv.phylo(treeDnew))
+```
+
+- New model
+```{r}
+Lambda2new<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataDnew, correlation=corPagel(0.1, phy=treeDnew), weights=varFixed(~Wdnew), method="ML")
+summary(Lambda2new)
+
+# Coefficients
+Lambda2newnull<-gls(log(Eggshell_thickness)~1, data=dataDnew, correlation=corPagel(0.1, phy=treeDnew), weights=varFixed(~Wdnew), method="ML")
+1 - (Lambda2$sigma/Lambda2null$sigma)^2
+anova(Lambda2null, Lambda2)
+```
+
+- New normality test
+```{r}
+shapiro.test(chol(solve(vcv(treeDnew)))%*%residuals(Lambda2new))
+plot(Lambda2new, resid(., type="n")~fitted(.), main="Normalized Residuals v Fitted Values",abline=c(0,0))
+resL2n<-resid(Lambda2new, type="n")
+qqnorm(resL2n); qqline(resL2n)
+# Still one outlier
+
+which(resid(Lambda2new, type="n")<(-4))
+dataDnew<-dataDnew[-104,]
+treeDnew<-drop.tip(treeD, setdiff(treeD$tip.label, dataDnew$Taxon))
+Wdnew<-diag(vcv.phylo(treeDnew))
+
+Lambda2new<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataDnew, correlation=corPagel(0.1, phy=treeDnew), weights=varFixed(~Wdnew), method="ML")
+summary(Lambda2new)
+
+# Coefficients
+Lambda2newnull<-gls(log(Eggshell_thickness)~1, data=dataDnew, correlation=corPagel(0.1, phy=treeDnew), weights=varFixed(~Wdnew), method="ML")
+1 - (Lambda2$sigma/Lambda2null$sigma)^2
+anova(Lambda2null, Lambda2)
+
+# Normality
+shapiro.test(chol(solve(vcv(treeDnew)))%*%residuals(Lambda2new))
+plot(Lambda2new, resid(., type="n")~fitted(.), main="Normalized Residuals v Fitted Values",abline=c(0,0))
+resL2n<-resid(Lambda2new, type="n")
+qqnorm(resL2n); qqline(resL2n)
+```
+
+The new data is still not normally distributed, due to the high variance in the taxa with the highest values (i.e. large non-avian dinosaurs).
+
+##### Density plots of the distribution of the residuals
+
+Phylogenetic path analysis showed that flight only has an indirect effect on eggshell thickness through egg mass, so *we do not expect a difference* in eggshell thickness for flyers and non-flyers, but *we do expect a significant difference* in eggshell thickness corrected for egg mass (i.e. residuals of the BM model above) for flyers and non-flyers.
+
+- Adding the residuals of the new model to the dataset
+```{r}
+dataDnew<-cbind(dataDnew,resL2n)
+```
+
+
+- Density plots of the distributions of our variables of interest, with flyers and non-flyers labels
+```{r}
+# Eggshell thickness
+subset(dataDnew, !is.na(Flight)) %>% 
+  ggplot(aes(x=log(Eggshell_thickness), fill = Flight)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+  theme(panel.background = element_rect(fill="darkgrey")) +
+  scale_fill_brewer(palette = "Set1") +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12) +
+  labs(fill="")
+
+# Egg mass
+subset(dataDnew, !is.na(Flight)) %>% 
+  ggplot(aes(x=log(Egg_mass), fill = Flight)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12) +
+  labs(fill="")
+```
+
+*Flyers and non-flyers are clearly separated*, showing an influence of flight on both variables. However, since we know that the influence of flight on eggshell thickness is indirect through that of egg mass, it is possible that the difference in eggshell thickness between flyers and non flyers is entirely driven by a difference in egg mass (reflecting a difference in body mass).
+
+- To test it, we can plot the distribution of our residuals the same way
+```{r}
+subset(dataDnew, !is.na(Flight)) %>% 
+  ggplot(aes(x=resL2n, fill = Flight)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12) +
+  labs(title="Residual variance (Eggshell thickness ~ Egg mass)", colour="Flight", x="Residuals", y="Density")
+```
+
+As hypothesized, *there does not seem to be a difference between flyers and non-flyers for eggshell thickness* after correction for egg mass.
+
+The variance of non-flyers seems to be greater than that of flyers, as shown in the PGLS plot above.
+
+Since our data are not normally distributed, we can test the equality of variances between the two samples with a Levene's test:
+```{r}
+leveneTest(log(Eggshell_thickness)~Flight, data=dataDnew, na.action=na.omit)
+leveneTest(log(Egg_mass)~Flight, data=dataDnew, na.action=na.omit)
+leveneTest(resL2n~Flight, data=dataDnew, na.action=na.omit)
+```
+
+As expected, the variance does not differ for eggshell thickness nor for egg mass, but *differs for eggshell thickness corrected for body mass*.
+
+We can assess that difference quantitatively.
+
+##### Phylogenetic ANOVA 
+
+- Using `phylANOVA` in `phytools`
+```{r}
+# For eggshell thickness
+dataflight<-ReorderData(treeflight, dataflight, taxa.names="row names")
+phylANOVA(treeflight, dataflight$Flight, log(dataflight$Eggshell_thickness), p.adj="BH")
+
+# For egg mass
+phylANOVA(treeflight, dataflight$Flight, log(dataflight$Egg_mass), p.adj="BH")
+
+# For eggshell thickness corrected for egg mass
+## Re-estimate the model for missing data in the Flight variable
+Lambdaflight<-gls(log(Eggshell_thickness)~log(Egg_mass), data=dataflight, correlation=corPagel(0.1, phy=treeflight), weights=varFixed(~Wf), method="ML")
+resLF<-resid(Lambdaflight, type="n")
+dataflight<-cbind(dataflight,resLF)
+
+phylANOVA(treeflight, dataflight$Flight, dataflight$resLF, p.adj="BH")
+```
+
+- Boxplots
+```{r}
+ggplot(dataflight, aes(x=Flight, y=log(Eggshell_thickness), fill=Flight)) + 
+  geom_boxplot() +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_fill_brewer(palette="Set1")
+
+ggplot(dataflight, aes(x=Flight, y=resLF, fill=Flight)) + 
+  geom_boxplot() +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_fill_brewer(palette="Set1")
+```
+
+Results are similar to those obtained using Levene's test:
+- *The difference between flyers and non-flyers for eggshell thickness is most likely driven by body mass* (egg mass being a proxy for it), since after correction for body mass that difference is *not significant*.
+- However, *the variance of eggshell thickness is significantly different between flyers and non-flyers.*
+
+## Evolutionary rates using phylogenetic ridge regressions – `RRphylo`
+
+### For eggshell thickness, including egg mass as a covariate
+
+- Variables of interest
+```{r}
+ET<-log(dataD$Eggshell_thickness); names(ET)<-rownames(dataD)
+EM<-log(dataD$Egg_mass); names(EM)<-rownames(dataD)
+ETM<-log(dataD$Eggshell_thickness/dataD$Egg_mass); names(ETM)<-rownames(dataD)
+```
+
+- Preparing covariates
+```{r}
+which(dataD$Taxon=="Spheroolithus_albertensis")
+which(dataD$Taxon=="indet_theropod1")
+which(dataD$Taxon=="Spheroolithus_sp")
+dataDoo<-dataD[-c(2,3,78),]
+treeD<-drop.tip(treeD, setdiff(treeD$tip.label, dataDoo$Taxon))
+ET<-log(dataDoo$Eggshell_thickness); names(ET)<-rownames(dataDoo)
+EM<-log(dataDoo$Egg_mass); names(EM)<-rownames(dataDoo)
+ETM<-log(dataDoo$Eggshell_thickness/dataDoo$Egg_mass); names(ETM)<-rownames(dataDoo)
+
+# Compile covariate (egg mass)
+RRcova<-RRphylo(tree=treeD, y=EM)
+
+## For rate shifts (search.shift)
+cov.values<-c(RRcova$aces,EM)
+names(cov.values)<-c(rownames(RRcova$aces),rownames(dataDoo))
+
+# For phenotype and rate trends (search.trend)
+acemulti<-RRcova$aces[,1]
+x1mass<-c(acemulti,EM)
+```
+
+- Compiling ridge regressions and identifying shifts and trends
+```{r, warning=F}
+## Ridge regression (shifts)
+ratesDcov<-RRphylo(tree=treeD, y=ET, cov=cov.values)
+
+# To visualize nodes in the tree
+ggtree(ratesDcov$tree) + geom_text2(aes(subset=!isTip, label=node), hjust=-.3) + geom_tiplab()
+
+## Search shifts
+# In the whole tree
+search.shift(ratesDcov, status.type= "clade", cov=EM, foldername=tempdir())
+
+# In specific clades
+shifts<-search.shift(ratesDcov, status.type= "clade", node=c(119,122,137,141,153,160,166,167,178,194,207), cov=EM, foldername=tempdir())
+shifts
+
+# Ridge regression (trends)
+ratesDcop<-RRphylo(tree=treeD, y=ET, x1=x1mass)
+
+# Search trends
+trend<-search.trend(ratesDcop, y=ET, nsim=100,
+             node=c(119,122,137,141,153,160,166,167,178,194,207),
+             x1=x1mass,
+             foldername=tempdir())
+trend
+```
+
+- Random permutations to account for sampling error and overfitting
+```{r}
+# for search.shift
+SSnode<-search.shift(ratesDcov, status.type= "clade", node=c(119,122), cov=EM,foldername=tempdir())
+SSnames<-rownames(SSnode$single.clades)
+overfitRR(ratesDcov, y=ET, swap.args=list(si=0.2,si2=0.2), shift.args=list(node=SSnames, state=NULL), cov=cov.values, nsim=100)
+
+# for search.trend
+STnode<-search.trend(ratesDcop, y=ET, node=c(119,122,137,141,153,160,166,167,178,194,207),
+             clus=0.5,foldername=tempdir(), x1=x1mass,ConfInt=F)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(119)),
+          x1=x1mass, nsim=100)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(122)),
+          x1=x1mass, nsim=100)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(137,141)),
+          x1=x1mass, nsim=100)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(153,160)),
+          x1=x1mass, nsim=100)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(166,167)),
+          x1=x1mass, nsim=100)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(178,194)),
+          x1=x1mass, nsim=100)
+overfitRR(ratesDcop, y=ET, trend.args=list(node=c(207)),
+          x1=x1mass, nsim=100)
+```
+
+### Ancestral state reconstruction for RRphylo (trends)
+
+- For phenotype
+```{r}
+phenoplot<-trend$pbt$phenotype; names(phenoplot)<-rownames(trend$pbt)
+phenoanc<-phenoplot[which(nchar(names(phenoplot))==3)]
+
+phenoMap<-contMap(ratesDcop$tree, ET, method="user", anc.states=phenoanc, plot=F)
+plot(setMap(phenoMap,colors=rev(brewer.pal(10, "Spectral"))), fsize=0.4,lwd=4,cex=c(0.5,0.3))
+```
+
+- For rates
+```{r}
+rateplot<-trend$rbt$rate; names(rateplot)<-rownames(trend$rbt)
+rateanc<-rateplot[which(nchar(names(rateplot))==3)]
+rateplot<-rateplot[which(nchar(names(rateplot))>3)]
+
+rateMap<-contMap(ratesDcop$tree, rateplot, method="user", anc.states=rateanc, plot=F)
+plot(setMap(rateMap,colors=c("royalblue","red3")), fsize=0.4,lwd=4,cex=c(0.5,0.3))
+```
+
+
+### For egg mass, including flight as a covariate
+
+- Preparing covariates
+```{r}
+# Removing missing data
+Flight<-dataD$Flight
+Flight<-as.numeric(Flight); names(Flight)<-rownames(dataD)
+
+EMn<-subset(EM, !is.na(Flight))
+Flight<-subset(Flight, !is.na(Flight))
+
+# Compile covariate (flight)
+RRcova<-RRphylo(tree=treeflight, y=Flight)
+
+## For rate shifts (search.shift)
+cov.values<-c(RRcova$aces,Flight)
+names(cov.values)<-c(rownames(RRcova$aces),names(Flight))
+
+# For phenotype and rate trends (search.rate)
+acemulti<-RRcova$aces[,1]
+x1flight<-c(acemulti,Flight)
+```
+
+- Compiling ridge regressions and identifying shifts and trends
+```{r, warning=F}
+## Ridge regression (shifts)
+ratesDcov<-RRphylo(tree=treeflight, y=EMn, cov=cov.values)
+
+# To visualize nodes in the tree
+ggtree(ratesDcov$tree) + geom_text2(aes(subset=!isTip, label=node), hjust=-.3) + geom_tiplab()
+
+## Search shifts
+# In the whole tree
+search.shift(ratesDcov, status.type= "clade", cov=Flight, foldername=tempdir())
+
+# In specific clades
+shifts<-search.shift(ratesDcov, status.type= "clade", node=c(118,121,136,141,153,158,160,161,172,188,189,201), cov=Flight, foldername=tempdir())
+shifts
+
+# Ridge regression (trends)
+ratesDcop<-RRphylo(tree=treeflight, y=EMn, x1=x1flight)
+
+# Search trends
+trend<-search.trend(ratesDcop, y=EMn, nsim=100,
+             node=c(118,121,136,141,153,158,160,161,172,188,189,201),
+             x1=x1flight,
+             foldername=tempdir())
+```
+
+- Random permutations to account for sampling error and overfitting
+```{r}
+# for search.shift
+SSnode<-search.shift(ratesDcov, status.type= "clade", node=c(136,141,153,158,160,161,172,188,189,201), cov=Flight,foldername=tempdir())
+SSnames<-rownames(SSnode$single.clades)
+overfitRR(ratesDcov, y=EMn, swap.args=list(si=0.2,si2=0.2), shift.args=list(node=SSnames, state=NULL), cov=cov.values, nsim=100)
+
+# for search.trend
+STnode<-search.trend(ratesDcop, y=EMn, node=c(118,136,141,161,189,201),
+             clus=0.5,foldername=tempdir(), x1=x1flight, ConfInt=F)
+overfitRR(ratesDcop, y=EMn, trend.args=list(node=c(118,136)),
+          x1=x1flight, nsim=100)
+overfitRR(ratesDcop, y=EMn, trend.args=list(node=c(141,161)),
+          x1=x1flight, nsim=100)
+overfitRR(ratesDcop, y=EMn, trend.args=list(node=c(189,201)),
+          x1=x1flight, nsim=100)
+```
+
+### For egg mass alone
+
+```{r}
+RREM<-RRphylo(tree=treeD, y=EM)
+
+# search.shift
+shifts<-search.shift(RREM, status.type= "clade", node=c(118,121,136,141,153,158,160,161,171,188,189,201), foldername=tempdir())
+shifts
+
+# search.trend
+search.trend(RREM, y=EM, nsim=100,
+             node=c(118,121,136,141,153,158,160,161,171,188,189,201),
+             foldername=tempdir())
+
+# overfitRR
+## for search.shift
+SSnode<-search.shift(RREM, status.type= "clade", node=c(121,136),foldername=tempdir())
+SSnames<-rownames(SSnode$single.clades)
+overshift<-overfitRR(RREM, y=EM, swap.args=list(si=0.2,si2=0.2), shift.args=list(node=SSnames, state=NULL), nsim=100)
+overshift
+
+## for search.trend
+STnode<-search.trend(RREM, y=EM, node=c(118,121,153,158,160,161,189,201),
+             clus=0.5,foldername=tempdir(), ConfInt=F)
+overfitRR(RREM, y=EM, trend.args=list(node=c(118,121)), nsim=100)
+overfitRR(RREM, y=EM, trend.args=list(node=c(153,158)), nsim=100)
+overfitRR(RREM, y=EM, trend.args=list(node=c(160,189)), nsim=100)
+overfitRR(RREM, y=EM, trend.args=list(node=c(201)), nsim=100)
+```
+
+### For ratio (eggshell thickness / egg mass), using flight as a covariate
+
+ - Prepare variables
+```{r}
+dataDnona<-subset(dataD, !is.na(dataD$Flight))
+ETMn<-log(dataDnona$Eggshell_thickness/dataDnona$Egg_mass)
+names(ETMn)<-rownames(dataDnona)
+
+# Compile covariate (flight)
+RRcova<-RRphylo(tree=treeflight, y=Flight)
+
+## For rate shifts (search.shift)
+cov.values<-c(RRcova$aces,Flight)
+names(cov.values)<-c(rownames(RRcova$aces),names(Flight))
+
+# For phenotype and rate trends (search.rate)
+acemulti<-RRcova$aces[,1]
+x1flight<-c(acemulti,Flight)
+```
+
+- Compiling ridge regressions and identifying shifts and trends
+```{r, warning=F}
+## Ridge regression (shifts)
+ratesDcov<-RRphylo(tree=treeflight, y=ETMn, cov=cov.values)
+
+# To visualize nodes in the tree
+ggtree(ratesDcov$tree) + geom_text2(aes(subset=!isTip, label=node), hjust=-.3) + geom_tiplab()
+
+## Search shifts
+# In the whole tree
+search.shift(ratesDcov, status.type= "clade", cov=Flight, foldername=tempdir())
+
+# In specific clades
+shifts<-search.shift(ratesDcov, status.type= "clade", node=c(118,121,136,141,153,158,160,161,172,188,201), cov=Flight, foldername=tempdir())
+shifts
+
+## Ridge regression (trends)
+ratesDcop<-RRphylo(tree=treeflight, y=ETMn, x1=x1flight)
+
+# Search trends
+trend<-search.trend(ratesDcop, y=ETMn, nsim=100,
+             node=c(118,121,136,141,153,158,160,161,172,188,201),
+             x1=x1flight, foldername=tempdir())
+```
+
+- Random permutations to account for sampling error and overfitting
+```{r}
+# for search.trend
+STnode<-search.trend(ratesDcop, y=ETMn, node=c(118,121,136,141,153,158,160,161,172,188,201),
+             clus=0.5,foldername=tempdir(), x1=x1flight, ConfInt=F)
+overfitRR(ratesDcop, y=ETMn, trend.args=list(node=c(118)), x1=x1flight,
+          nsim=100)
+overfitRR(ratesDcop, y=ETMn, trend.args=list(node=c(136,141)),
+          x1=x1flight, nsim=100)
+overfitRR(ratesDcop, y=ETMn, trend.args=list(node=c(153,158)),
+          x1=x1flight, nsim=100)
+overfitRR(ratesDcop, y=ETMn, trend.args=list(node=c(161,201)),
+          x1=x1flight, nsim=100)
+```
+
+#### Ancestral state reconstruction for RRphylo (trends)
+
+- For phenotype
+```{r}
+phenoplot<-trend$pbt$phenotype; names(phenoplot)<-rownames(trend$pbt)
+phenoanc<-phenoplot[which(nchar(names(phenoplot))==3)]
+
+phenoMap<-contMap(ratesDcop$tree, ETMn, method="user", anc.states=phenoanc, plot=F)
+plot(setMap(phenoMap,colors=rev(brewer.pal(10, "Spectral"))), fsize=0.4,lwd=4,cex=c(0.5,0.3))
+```
+
+- For rates
+```{r}
+rateplot<-trend$rbt$rate; names(rateplot)<-rownames(trend$rbt)
+rateanc<-rateplot[which(nchar(names(rateplot))==3)]
+rateplot<-rateplot[which(nchar(names(rateplot))>3)]
+
+rateMap<-contMap(ratesDcop$tree, rateplot, method="user", anc.states=rateanc, plot=F)
+plot(setMap(rateMap,colors=rev(brewer.pal(10, "Spectral"))), fsize=0.4,lwd=4,cex=c(0.5,0.3))
+```
+
+- Difference between the two equations (Hoyt, 1979; Packard and DeMarco, 1991) for egg mass estimation
+```{r}
+equatable<-read.table("Test_equation.txt", header=T)
+t.test(equatable$A,equatable$B)
+```
+
+### Define taxonomic groups (non-paravian maniraptorans, non-avialan paravians, non-avian avialans) to compile regressions for each of them
+
+- Define the new groups
+```{r}
+dataD<-data %>% filter(Cladenew=="Non-avian_dinosaurs"|Cladenew=="Paleognaths"|Cladenew=="Neognaths"|Cladenew=="Avialans"|Cladenew=="Paravians"|Cladenew=="Maniraptorans")
+dataD<-subset(dataD, !is.na(Egg_mass))
+rownames(dataD)<-dataD$Taxon
+treeD<-drop.tip(treeN,setdiff(treeN$tip.label, dataD$Taxon))
+dataD<-ReorderData(treeD, dataD, taxa.names="row names")
+```
+
+- New regressions for each of them
+```{r}
+dataD<-dataD[-c(25:27,97),]
+
+# Compile regressions for each group
+groups<-c("Paleognaths","Neognaths","Avialans","Paravians","Maniraptorans","Non-avian_dinosaurs")
+datagroup=list()
+coef<-data.frame()
+for (i in 1:6) {
+  datagroup<-subset(dataD, dataD$Cladenew==groups[i])
+  treegroup<-drop.tip(treeD, setdiff(treeD$tip.label,datagroup$Taxon))
+  Wg<-diag(vcv.phylo(treegroup))
+  
+  lambda <- seq(0, 1, 0.1)
+  fit <- list()
+  form <- log(Eggshell_thickness)~log(Egg_mass)
+  for (i in seq_along(lambda)) {
+    cor <- corPagel(lambda[i], phy = treegroup, fixed = T)
+    fit[[i]] <- gls(form, correlation = cor, data = datagroup,
+                    weights=varFixed(~Wg), na.action=na.exclude, method = "ML")
+  }
+  fitL<-sapply(fit, logLik)
+  
+  glsg<-gls(log(Eggshell_thickness)~log(Egg_mass), data=datagroup,
+            correlation=corPagel((which(fitL==max(fitL))-1)/10, phy=treegroup,
+                                 fixed=T),
+            weights=varFixed(~Wg), method='ML')
+  coef<-c(coef, glsg$coefficients)
+  
+}
+
+# New dataframe with coefficients for each regression for the plot
+df<-data.frame(matrix(nrow=6, ncol=2))
+for (u in 1:6) {
+  df[u,]<- c(coef[[(u*2)-1]],coef[[u*2]])
+}
+row.names(df)<-groups; colnames(df)<-c("Intercept","Slope")
+
+# Define convex hulls
+hullg <- na.omit(dataD[,c(1:4,12)]) %>% group_by(Cladenew) %>%
+    slice(chull(log(Egg_mass), log(Eggshell_thickness)))
+
+# Plot of all regressions with convex hulls
+ggplot(dataD, aes(log(Egg_mass), log(Eggshell_thickness), color=Cladenew)) +
+  geom_point(size=3) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=df[1,1], slope=df[1,2], colour="steelblue1", size=1.3) +
+  geom_abline(intercept=df[2,1], slope=df[2,2], colour="springgreen3", size=1.3) +
+  geom_abline(intercept=df[3,1], slope=df[3,2], colour="tomato1", size=1.3) +
+  geom_abline(intercept=df[4,1], slope=df[4,2], colour="magenta", size=1.3) +
+  geom_abline(intercept=df[5,1], slope=df[5,2], colour="lightgoldenrod", size=1.3) +
+  geom_abline(intercept=df[6,1], slope=df[6,2], colour="darkturquoise", size=1.3) +
+  theme(panel.background = element_rect(fill="black")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_colour_brewer("Cladenew", palette="Set1") 
+  #aes(fill=Cladenew) +
+  #geom_polygon(data=hullg, alpha=0.5) +
+  #theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
+```
+There seems to be a difference in slope between *paravians* and *non-paravians*.
+
+- Test for difference between slopes – using `lsmeans`
+```{r}
+treeD<-drop.tip(treeN,setdiff(treeN$tip.label, dataD$Taxon))
+Wd<-diag(vcv.phylo(treeD))
+
+slopereg<-gls(log(Eggshell_thickness)~log(Egg_mass)*Cladenew, data=dataD,
+            correlation=corPagel(1, phy=treeD), weights=varFixed(~Wd), method='ML')
+anova(slopereg)
+
+# Get slopes and compare them pairwise
+lst<-lstrends(slopereg, "Cladenew", var="log(Egg_mass)", mode="df.error")
+pairs(lst)
+```
+The difference between avialan groups and non-maniraptoran dinosaurs is significant. Non-avialan maniraptoran groups are not different from non-maniraptorans nor from avialans, suggesting their slopes are intermediate between the respective slopes of these two groups.
+
+#### Same with non-paravians and paravians as two groups (to show the difference in slope)
+
+- Define the groups
+```{r}
+Paravian<-as.character(dataD$Cladenew)
+Paravian[Paravian=="Non-avian_dinosaurs"|Paravian=="Maniraptorans"]<-"No"
+Paravian[Paravian!="No"]<-"Yes"
+dataD<-cbind(dataD, Paravian)
+treeD<-drop.tip(treeD, setdiff(treeD$tip.label, dataD$Taxon))
+```
+
+- Regressions
+```{r}
+# Data and trees
+datapar<-subset(dataD, dataD$Paravian=="Yes")
+datanopar<-subset(dataD, dataD$Paravian=="No")
+treepar<-drop.tip(treeD, setdiff(treeD$tip.label, datapar$Taxon))
+treenopar<-drop.tip(treeD, setdiff(treeD$tip.label, datanopar$Taxon))
+Wpar<-diag(vcv.phylo(treepar))
+Wnopar<-diag(vcv.phylo(treenopar))
+
+# Regressions
+glspar<-gls(log(Eggshell_thickness)~log(Egg_mass), data=datapar, correlation=corPagel(1, phy=treepar, fixed=F),weights=varFixed(~Wpar), method='ML')
+glsnopar<-gls(log(Eggshell_thickness)~log(Egg_mass), data=datanopar, correlation=corPagel(1, phy=treenopar, fixed=F),weights=varFixed(~Wnopar), method='ML')
+summary(glspar); summary(glsnopar)
+
+# R-squared and p-values
+glsparnull<-gls(log(Eggshell_thickness)~1, data=datapar, correlation=corPagel(1, phy=treepar, fixed=F),weights=varFixed(~Wpar), method='ML')
+1 - (glspar$sigma/glsparnull$sigma)^2
+anova(glspar, glsparnull)
+
+glsnoparnull<-gls(log(Eggshell_thickness)~1, data=datanopar, correlation=corPagel(1, phy=treenopar, fixed=F),weights=varFixed(~Wnopar), method='ML')
+1 - (glsnopar$sigma/glsnoparnull$sigma)^2
+anova(glsnopar, glsnoparnull)
+
+# Plot
+ggplot(dataD, aes(log(Egg_mass), log(Eggshell_thickness), color=Cladenew)) +
+  geom_point(size=4) +
+  # geom_text(aes(label=Taxon),hjust=-0.1, vjust=0.4) +
+  xlab("ln egg mass (g)") +
+  ylab("ln eggshell thickness (µm)") +
+  geom_abline(intercept=glspar$coefficients[1], slope=glspar$coefficients[2], colour="steelblue1", size=1.3) +
+  geom_abline(intercept=glsnopar$coefficients[1], slope=glsnopar$coefficients[2], colour="springgreen3", size=1.3) +
+  theme(panel.background = element_rect(fill="white")) +
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=17)) +
+  scale_colour_brewer("Cladenew", palette="Set1")
+
+
+# Difference between slopes
+lambda <- seq(0, 1, 0.1)
+fit <- list()
+form <- log(Egg_mass)~log(Body_mass)
+for (i in seq_along(lambda)) {
+  cor <- corPagel(lambda[i], phy = treeD, fixed = T)
+  fit[[i]] <- gls(form, correlation = cor, data = dataD, weights=varFixed(~Wd), na.action=na.exclude, method = "ML")
+}
+plot(sapply(fit, logLik))
+
+slopereg2<-gls(log(Eggshell_thickness)~log(Egg_mass)*Paravian, data=dataD,
+               correlation=corPagel(0, phy=treeD, fixed=T),
+               weights=varFixed(~Wd), method='ML')
+anova(slopereg2)
+
+lst<-lstrends(slopereg2, "Paravian", var="log(Egg_mass)", mode="df.error")
+pairs(lst)
+```
+
+The regression slopes for paravians and non-paravians are significantly different from each other.
