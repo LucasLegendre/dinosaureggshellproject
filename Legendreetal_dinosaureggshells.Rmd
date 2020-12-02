@@ -657,7 +657,7 @@ ggplot(dataDclean, aes(log(Egg_mass), log(Eggshell_thickness), color=Precocialit
   theme_ipsum(axis_title_size=15, base_size = 20, axis_text_size = 12)
 ```
 
-- Boxplots for each of those on rellative eggshell thickness – i.e. ratio (eggshell thickness/egg mass)
+- Boxplots for each of those on relative eggshell thickness – i.e. ratio (eggshell thickness/egg mass)
 ```{r}
 ggplot(subset(dataD, !is.na(Flight)), aes(x=Flight, y=log(Eggshell_thickness/Egg_mass), fill=Flight)) + 
   geom_boxplot() +
