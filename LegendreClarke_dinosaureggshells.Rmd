@@ -2,7 +2,13 @@
 title: "Dinosaur eggshell evolution project"
 author: "Lucas Legendre"
 date: "12/02/2020"
-output: rmarkdown::github_document
+output:
+  html_document:
+     toc: true
+     toc_float:
+      collapsed: false
+      smooth_scroll: false
+     df_print: paged
 ---
 
 ```{r setup, include=FALSE}
