@@ -1399,6 +1399,7 @@ ggplot(dataDclean, aes(log(Egg_mass), log(Eggshell_thickness), color=Paravian, f
 ```
 
 # Difference between slopes
+```{r}
 lambda <- seq(0, 1, 0.1)
 fit <- list()
 form <- log(Egg_mass)~log(Body_mass)
