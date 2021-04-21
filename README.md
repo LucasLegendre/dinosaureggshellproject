@@ -1,5 +1,5 @@
 # dinosaureggshellproject
-Code, data, and phylogenetic tree for a project by Legendre and Clarke on dinosaur eggshell evolution
+Code, data, and phylogenetic tree for a project on dinosaur eggshell evolution, published in Legendre and Clarke (2021, Evolution).
 
 This project includes:
 - 'LegendreClarke_dinosaureggshells.Rmd': R script for the project, in Markdown format
