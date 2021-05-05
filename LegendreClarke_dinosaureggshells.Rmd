@@ -117,7 +117,7 @@ plot(sapply(fit, logLik)) # best fit: 0.8
 - PGLS models
 ```{r}
 BM<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBrownian(phy=treemass), weights=varFixed(~Wm), method="ML")
-OU<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corMartins(1, phy=treemass, fixed=T), weights=varFixed(~Wm), method="ML")
+OU<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corMartins(0.1, phy=treemass, fixed=T), weights=varFixed(~Wm), method="ML")
 Lambda<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corPagel(0.1, phy=treemass), weights=varFixed(~Wm), method="ML")
 EB<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBlomberg(0.8, phy=treemass), weights=varFixed(~Wm), method="ML")
 OLS<-gls(log(Egg_mass)~log(Body_mass), data=datamass, method="ML")
