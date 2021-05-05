@@ -20,7 +20,7 @@ Compiled under R version 4.0.4 (2021-02-15)
 <b>WARNING</b>: edit the working directory to your preferred folder.
 
 This document details all analyses performed in R for the study:  
-Legendre, L. J., and J. A. Clarke. Shifts in eggshell thickness are related to changes in locomotor ecology in dinosaurs.
+Legendre, L. J., and J. A. Clarke. Shifts in eggshell thickness are related to changes in locomotor ecology in dinosaurs. Evolution.
 
 For more information regarding the study, datasets, and analyses, please refer to the Main Text and Supplementary Information of this paper. If you have any additional questions, feel free to email me at <lucasjlegendre@gmail.com>.
 
@@ -103,7 +103,7 @@ for (i in seq_along(alpha)) {
 }
 plot(sapply(fit, logLik)) # best fit: 0.1
 
-# Best fit for the alpha parameter in the Early Burst (EB) model
+# Best fit for the g parameter in the Early Burst (EB) model
 g <- seq(0.1, 1, 0.1)
 fit <- list()
 form <- log(Egg_mass)~log(Body_mass)
@@ -111,15 +111,15 @@ for (i in seq_along(g)) {
   cor <- corBlomberg(g[i], phy = treemass, fixed = T)
   fit[[i]] <- gls(form, correlation = cor, data = datamass, weights=varFixed(~Wm), na.action=na.exclude, method = "ML")
 }
-plot(sapply(fit, logLik)) # best fit: 0.1
+plot(sapply(fit, logLik)) # best fit: 0.8
 ```
 
 - PGLS models
 ```{r}
 BM<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBrownian(phy=treemass), weights=varFixed(~Wm), method="ML")
-OU<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corMartins(0.1, phy=treemass, fixed=T), weights=varFixed(~Wm), method="ML")
+OU<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corMartins(1, phy=treemass, fixed=T), weights=varFixed(~Wm), method="ML")
 Lambda<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corPagel(0.1, phy=treemass), weights=varFixed(~Wm), method="ML")
-EB<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBlomberg(0.1, phy=treemass), weights=varFixed(~Wm), method="ML")
+EB<-gls(log(Egg_mass)~log(Body_mass), data=datamass, correlation=corBlomberg(0.8, phy=treemass), weights=varFixed(~Wm), method="ML")
 OLS<-gls(log(Egg_mass)~log(Body_mass), data=datamass, method="ML")
 
 Cand.models = list()
