@@ -20,11 +20,8 @@ Compiled under R version 4.0.4 (2021-02-15)
 <b>WARNING</b>: edit the working directory to your preferred folder.
 
 This document details all analyses performed in R for the study:  
-<<<<<<< HEAD
-Legendre, L. J., and J. A. Clarke. 2021. Shifts in eggshell thickness are related to changes in locomotor ecology in dinosaurs. <i>Evolution</i> <b>75</i>:1415-1430.
-=======
-Legendre, L. J., and J. A. Clarke. Shifts in eggshell thickness are related to changes in locomotor ecology in dinosaurs. Evolution.
->>>>>>> a322830e2fb7ec7475c3f2b3f4b36be42d292883
+
+Legendre, L. J., and J. A. Clarke. 2021. Shifts in eggshell thickness are related to changes in locomotor ecology in dinosaurs. <i>Evolution</i> <b>75</b>:1415-1430.
 
 For more information regarding the study, datasets, and analyses, please refer to the Main Text and Supplementary Information of this paper. If you have any additional questions, feel free to email me at <lucasjlegendre@gmail.com>.
 
