@@ -358,7 +358,7 @@ averagemodel2$coef; averagemodel2$lower; averagemodel2$upper
 result2$d_sep$ten
 ```
 
-Result is similar to the previous model: flight and egg mass are the main drivers of variation in eggshell thickness for birds. The 95% confidence interval for the ET~CS regression coefficient appears to be different from zero, but its lower limit is 0.049,; which is much lower than .
+Result is similar to the previous model: flight and egg mass are the main drivers of variation in eggshell thickness for birds. The 95% confidence interval for the ET~CS regression coefficient appears to be different from zero, but its lower limit is 0.049, i.e. very close to the zero threshold.
 
 *We will thus focus on these two variables to describe the variation of eggshell thickness in dinosaurs, and use them as auxiliary variables to compile evolutionary rates for eggshell thickness*.
 
